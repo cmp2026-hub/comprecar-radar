@@ -1,0 +1,68 @@
+name: Atualizar e publicar o Comprecar Radar
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+concurrency:
+  group: comprecar-publicacao
+  cancel-in-progress: false
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: .cache
+          key: comprecar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: comprecar-state-v1-
+      - name: Verificar a migração
+        run: npm test
+      - name: Coletar dados públicos e preparar o site
+        id: collect
+        run: npm run collect
+      - name: Preservar o checkpoint diário
+        if: steps.collect.outputs.checkpoint == 'true'
+        continue-on-error: true
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- data/checkpoint.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Atualiza o checkpoint público do painel'
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+      - uses: actions/configure-pages@v5
+        if: steps.collect.outputs.publish == 'true'
+      - uses: actions/upload-pages-artifact@v4
+        if: steps.collect.outputs.publish == 'true'
+        with:
+          path: site
+          retention-days: 1
+      - name: Publicar o painel
+        id: deployment
+        uses: actions/deploy-pages@v4
+        if: steps.collect.outputs.publish == 'true'
+      - name: Confirmar a versão publicada
+        if: steps.deployment.outcome == 'success'
+        run: node scripts/mark-published.mjs
+      - uses: actions/cache/save@v6
+        if: always() && steps.collect.outcome == 'success'
+        with:
+          path: .cache
+          key: comprecar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
