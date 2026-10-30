@@ -33,12 +33,16 @@ export function parseAudiencePage(network,html,observedAt=new Date().toISOString
    profile(publicCount(about.subscriberCountText),AUDIENCE_URLS.youtube);result.channelViews=publicCount(about.viewCountText);
   }
  }else if(network==='instagram'){
-  const roots=scripts(html);for(const data of roots)walk(data,o=>{
-   if(o.username?.toLowerCase()==='comprecar'&&IG.includes(String(o.pk||o.id))&&numeric(o.follower_count)!==null)profile(publicCount(Number(o.follower_count)),AUDIENCE_URLS.instagram);
+  const roots=scripts(html),embedded=html.match(/"contextJSON"\s*:\s*("(?:\\.|[^"\\])*")/);
+  if(embedded)try{roots.push(JSON.parse(JSON.parse(embedded[1])));}catch{}
+  for(const data of roots)walk(data,o=>{
+   const ownProfile=o.username?.toLowerCase()==='comprecar'&&IG.includes(String(o.pk||o.id||o.owner_id));
+   const followers=numeric(o.follower_count??o.followers_count??o.edge_followed_by?.count);
+   if(ownProfile&&o.is_private!==true&&followers!==null)profile(publicCount(followers),AUDIENCE_URLS.instagram);
    const owner=o.user||o.owner,code=o.code||o.shortcode;
    // Public Reels-grid entries identify the author by pk and can omit username.
    const confirmed=owner&&IG.includes(String(owner.pk||owner.id))&&(!owner.username||owner.username.toLowerCase()==='comprecar');
-   if(confirmed&&/^[-\w]+$/.test(code||'')&&o.like_and_view_counts_disabled!==true){
+   if(confirmed&&/^[-\w]+$/.test(code||'')&&o.is_video!==false&&o.media_type!==1&&o.like_and_view_counts_disabled!==true){
     if(numeric(o.play_count)!==null)video('https://www.instagram.com/reel/'+code+'/',o.play_count,'plays');
     else video('https://www.instagram.com/reel/'+code+'/',o.video_view_count,'views');
    }
