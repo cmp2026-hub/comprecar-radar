@@ -98,7 +98,8 @@ export function feedUrl(raw){
  if(u.protocol!=='https:'||u.username||u.password||u.port||!allowed.some(a=>h===a||h.endsWith('.'+a)))throw Error('Use uma fonte HTTPS de rss.app, fetchrss.com ou uma das instâncias RSSHub/RSS-Bridge indicadas. URLs com credenciais não são aceitas.');
  return u.href;
 }
-export function createApp(store,fetcher=fetch){
+export function createApp(store,fetcher=fetch,{audienceInterval=AUDIENCE_INTERVAL}={}){
+ if(!Number.isFinite(audienceInterval)||audienceInterval<300000)throw Error('Intervalo de contagens inválido.');
  let refreshing=null;
  async function read(){return(await store.get('state'))||{posts:[],sources:{},statuses:{},lastCheck:null};}
  async function save(state){if(state.whatsapp)scanWhatsApp(state,groupPosts(state.posts));await store.put('state',state);}
@@ -107,9 +108,10 @@ export function createApp(store,fetcher=fetch){
  async function collectAudience(){
   const state=await read(),now=Date.now();state.audience||={startedAt:new Date(now).toISOString(),profiles:{},videos:{},statuses:{}};const a=state.audience;
   const instagramUpgrade=a.statuses.instagram?.method!=='public-embeds';
-  if(Date.parse(a.nextCheckAt||0)>now&&!instagramUpgrade)return;
+  const successfulDue=status=>status?.state==='ok'&&Number.isFinite(Date.parse(status.lastSuccess))&&now-Date.parse(status.lastSuccess)>=audienceInterval;
+  if(Date.parse(a.nextCheckAt||0)>now&&!instagramUpgrade&&!Object.values(a.statuses).some(successfulDue))return;
   await Promise.all(Object.keys(NETWORKS).map(async network=>{
-   if(Date.parse(a.statuses[network]?.nextCheckAt||0)>now)return;
+   if(Date.parse(a.statuses[network]?.nextCheckAt||0)>now&&!successfulDue(a.statuses[network]))return;
    const errors=[];let pages=0,blocked=false;
    async function page(url){if(blocked)return;try{const html=await getFeed(url,network);const parsed=captureAudience(state,network,html);if(!parsed||(!parsed.profile&&!parsed.videos.length))throw Error('A fonte pública não disponibilizou contagens nesta consulta.');pages++;return parsed;}catch(e){errors.push(String(e.message).slice(0,220));if(/HTTP 40[139]|HTTP 429|redirect/i.test(e.message))blocked=true;}}
    if(network==='tiktok'){
@@ -132,9 +134,9 @@ export function createApp(store,fetcher=fetch){
     if(network==='facebook'&&!blocked)await page(FACEBOOK_VIDEOS);
     if(network==='youtube'&&!blocked){await page('https://www.youtube.com/feeds/videos.xml?channel_id='+CHANNEL);}
    }
-   a.statuses[network]={state:pages?(errors.length?'partial':'ok'):'error',...(network==='instagram'?{method:'public-embeds'}:{}),message:errors[0]||'Contagens públicas consultadas',lastAttempt:new Date().toISOString(),...(pages?{lastSuccess:new Date().toISOString()}:{}),nextCheckAt:new Date(Date.now()+(blocked?900000:AUDIENCE_INTERVAL)).toISOString()};
+   a.statuses[network]={state:pages?(errors.length?'partial':'ok'):'error',...(network==='instagram'?{method:'public-embeds'}:{}),message:errors[0]||'Contagens públicas consultadas',lastAttempt:new Date().toISOString(),...(pages?{lastSuccess:new Date().toISOString()}:{}),nextCheckAt:new Date(Date.now()+(blocked?900000:audienceInterval)).toISOString()};
   }));
-  a.lastCheckAt=new Date().toISOString();a.nextCheckAt=new Date(Date.now()+AUDIENCE_INTERVAL).toISOString();await save(state);
+  a.lastCheckAt=new Date().toISOString();a.nextCheckAt=new Date(Date.now()+audienceInterval).toISOString();await save(state);
  }
  async function syncTikTok(state){
   const now=new Date().toISOString(),source=state.sources.tiktok||TIKTOK_FEED,previous=state.statuses.tiktok||{},custom=source!==TIKTOK_FEED;
