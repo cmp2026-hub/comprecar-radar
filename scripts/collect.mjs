@@ -9,7 +9,9 @@ async function atomic(path,value){const target=resolve(root,path);await mkdir(di
 const checkpoint=await load('data/checkpoint.json'),cache=await load('.cache/state.json');
 const previous=[checkpoint,cache].filter(Boolean).sort((a,b)=>Date.parse(b.savedAt)-Date.parse(a.savedAt))[0];if(!previous)throw Error('O checkpoint inicial não foi encontrado.');
 let state=sanitizeState(previous.data);const store={get:async()=>structuredClone(state),put:async(_key,value)=>{state=structuredClone(value);}};
-if(!offline){const app=createApp(store);await app.refresh();await app.audienceTick();}
+// The scheduler runs every 15 minutes; leave room for runner/collection jitter.
+// Rate-limit pauses remain 15 minutes and are never shortened by this setting.
+if(!offline){const app=createApp(store,fetch,{audienceInterval:600000});await app.refresh();await app.audienceTick();}
 state=applyGroups(sanitizeState(state),JSON.parse(await readFile(resolve(root,'data/groups.json'),'utf8')));
 const now=Date.now(),built=snapshot(state,now),publish=shouldPublish(previous.publication,built.signature,now);
 const envelope={schemaVersion:1,savedAt:new Date(now).toISOString(),data:state,publication:previous.publication||null,pendingBuild:{signature:built.signature,generatedAt:new Date(now).toISOString()}};
