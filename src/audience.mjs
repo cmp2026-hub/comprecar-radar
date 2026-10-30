@@ -34,7 +34,7 @@ export function parseAudiencePage(network,html,observedAt=new Date().toISOString
   }
  }else if(network==='instagram'){
   const roots=scripts(html),embedded=html.match(/"contextJSON"\s*:\s*("(?:\\.|[^"\\])*")/);
-  if(embedded)try{roots.push(JSON.parse(JSON.parse(embedded[1])));}catch{}
+  if(embedded)try{const data=JSON.parse(JSON.parse(embedded[1]));roots.push(data);if(data.context?.username?.toLowerCase()==='comprecar'&&IG.includes(String(data.context.owner_id)))result.embeddedProfile=true;else result.embeddedMedia=true;}catch{}
   for(const data of roots)walk(data,o=>{
    const ownProfile=o.username?.toLowerCase()==='comprecar'&&IG.includes(String(o.pk||o.id||o.owner_id));
    const followers=numeric(o.follower_count??o.followers_count??o.edge_followed_by?.count);
@@ -75,7 +75,9 @@ function compact(samples,now){
 export function observeAudience(state,result){
  const at=result.observedAt,now=Date.parse(at);if(!Number.isFinite(now))throw Error('Horário de coleta inválido.');
  const audience=state.audience||={startedAt:at,profiles:{},videos:{},statuses:{}};
- if(result.profile){const old=audience.profiles[result.network],samples=[...(old?.samples||[]).filter(s=>s.at!==at),{at,value:result.profile.value}];audience.profiles[result.network]={...result.profile,samples:compact(samples,now)};}
+ const oldProfile=audience.profiles[result.network],keepPrimary=result.network==='instagram'&&oldProfile&&(result.embeddedMedia||(result.embeddedProfile&&audience.statuses.instagram?.method==='public-reels'&&audience.statuses.instagram?.state==='ok'&&now-Date.parse(oldProfile.observedAt)<AUDIENCE_INTERVAL));
+ // A cached profile widget must not replace a recent successful Reels reading.
+ if(result.profile&&!keepPrimary){const samples=[...(oldProfile?.samples||[]).filter(s=>s.at!==at),{at,value:result.profile.value}];audience.profiles[result.network]={...result.profile,samples:compact(samples,now)};}
  for(const video of result.videos){const key=metricKey(video.network,video.url),old=audience.videos[key];
   // A first reading establishes a baseline; it is never treated as views gained in that period.
   const samples=[...(old?.samples||[]).filter(s=>s.at!==at),{at,value:video.value,metric:video.metric}];audience.videos[key]={...video,samples:compact(samples,now)};

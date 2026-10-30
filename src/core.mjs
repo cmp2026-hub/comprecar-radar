@@ -106,10 +106,10 @@ export function createApp(store,fetcher=fetch){
  function captureAudience(state,network,text,at=new Date().toISOString()){try{const result=parseAudiencePage(network,text,at);if(result.profile||result.videos.length)observeAudience(state,result);return result;}catch{return null;}}
  async function collectAudience(){
   const state=await read(),now=Date.now();state.audience||={startedAt:new Date(now).toISOString(),profiles:{},videos:{},statuses:{}};const a=state.audience;
-  const instagramUpgrade=a.statuses.instagram?.method!=='public-reels';
+  const instagramUpgrade=a.statuses.instagram?.method!=='public-embeds';
   if(Date.parse(a.nextCheckAt||0)>now&&!instagramUpgrade)return;
   await Promise.all(Object.keys(NETWORKS).map(async network=>{
-   if(Date.parse(a.statuses[network]?.nextCheckAt||0)>now&&!(network==='instagram'&&instagramUpgrade))return;
+   if(Date.parse(a.statuses[network]?.nextCheckAt||0)>now)return;
    const errors=[];let pages=0,blocked=false;
    async function page(url){if(blocked)return;try{const html=await getFeed(url,network);const parsed=captureAudience(state,network,html);if(!parsed||(!parsed.profile&&!parsed.videos.length))throw Error('A fonte pública não disponibilizou contagens nesta consulta.');pages++;return parsed;}catch(e){errors.push(String(e.message).slice(0,220));if(/HTTP 40[139]|HTTP 429|redirect/i.test(e.message))blocked=true;}}
    if(network==='tiktok'){
@@ -118,20 +118,21 @@ export function createApp(store,fetcher=fetch){
     if(!urls.length)errors.push('Ainda não há links do TikTok para consultar.');
     for(let i=0;i<urls.length&&!blocked;i+=2)await Promise.allSettled(urls.slice(i,i+2).map(page));
    }else if(network==='instagram'){
-    // Reels publishes both follower and play counts; a profile login redirect
-    // must not prevent this independent public source from being selected.
-    const parsed=await page(INSTAGRAM_REELS_URL);
-    if(!parsed?.profile){
-     const recent=Date.parse(a.profiles.instagram?.observedAt||0)>=now-120000;
-     if(recent)pages++;
-     else if(!blocked)await page(INSTAGRAM_PUBLIC_URL);
-    }
+    // Public embeds expose counts without a signed-in profile or private API.
+    // Reuse the profile reading captured while collecting public post links.
+    if(Date.parse(a.profiles.instagram?.observedAt||0)>=now-120000)pages++;
+    else await page(INSTAGRAM_PUBLIC_URL);
+    const posts=state.posts.filter(p=>p.network==='instagram'&&p.kind==='video'&&p.publishedAt).sort((a,b)=>b.publishedAt.localeCompare(a.publishedAt));
+    const selected=[...posts.slice(0,8),...posts.slice(8).filter(p=>!a.videos['instagram:'+p.url.match(/\/(?:p|reel|tv)\/([^/]+)/)?.[1]]).slice(0,2)];
+    const urls=[...new Set(selected.map(p=>p.url.replace(/\/$/,'')+'/embed/'))];
+    for(let i=0;i<urls.length&&!blocked;i+=2)await Promise.allSettled(urls.slice(i,i+2).map(page));
+    if(!urls.length&&!blocked)await page(INSTAGRAM_REELS_URL);
    }else{
     await page(AUDIENCE_URLS[network]);
     if(network==='facebook'&&!blocked)await page(FACEBOOK_VIDEOS);
     if(network==='youtube'&&!blocked){await page('https://www.youtube.com/feeds/videos.xml?channel_id='+CHANNEL);}
    }
-   a.statuses[network]={state:pages?(errors.length?'partial':'ok'):'error',...(network==='instagram'?{method:'public-reels'}:{}),message:errors[0]||'Contagens públicas consultadas',lastAttempt:new Date().toISOString(),...(pages?{lastSuccess:new Date().toISOString()}:{}),nextCheckAt:new Date(Date.now()+(blocked?900000:AUDIENCE_INTERVAL)).toISOString()};
+   a.statuses[network]={state:pages?(errors.length?'partial':'ok'):'error',...(network==='instagram'?{method:'public-embeds'}:{}),message:errors[0]||'Contagens públicas consultadas',lastAttempt:new Date().toISOString(),...(pages?{lastSuccess:new Date().toISOString()}:{}),nextCheckAt:new Date(Date.now()+(blocked?900000:AUDIENCE_INTERVAL)).toISOString()};
   }));
   a.lastCheckAt=new Date().toISOString();a.nextCheckAt=new Date(Date.now()+AUDIENCE_INTERVAL).toISOString();await save(state);
  }
