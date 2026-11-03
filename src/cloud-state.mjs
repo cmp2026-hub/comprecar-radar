@@ -36,9 +36,10 @@ export function applyGroups(state,rules=[]){
 }
 export function snapshot(state,now=Date.now()){
  const safe=sanitizeState(state),{audience,history,...rest}=safe;
- const publicState={...rest,annualSearch:history.annual||null,coverage:coverageFor(safe),groups:groupPosts(safe.posts),networks:NETWORKS,serverTime:new Date(now).toISOString(),publicView:true,cloudSnapshot:true};
+ const posts=safe.posts.map(p=>{const m=audience?.videos?.[metricKey(p.network,p.url)],metrics=p.kind==='video'&&m&&count(m.value)&&['views','plays'].includes(m.metric)&&date(m.observedAt)?pick(m,['value','metric','observedAt']):null;return{...p,metrics};});
+ const publicState={...rest,posts,annualSearch:history.annual||null,coverage:coverageFor(safe),groups:groupPosts(posts),networks:NETWORKS,serverTime:new Date(now).toISOString(),publicView:true,cloudSnapshot:true};
  const reports=[];for(const at of[now,now+86400000])for(const preset of PERIOD_PRESETS){const range=presetRange(preset.id,new Date(at));if(!reports.some(r=>r.from===range.from&&r.to===range.to))reports.push({...audienceReport(safe,range,now),preset:preset.id});}
- const meaningful={posts:safe.posts,statuses:Object.fromEntries(networkNames.map(n=>[n,pick(safe.statuses[n],['state','method','discoveryMethod','count','confirmed','pending','missingFromFeed','missingFromSource'])])),reports:reports.map(r=>[r.from,r.to,r.followers,r.observedDelta,r.comparedPosts,r.networks.map(n=>[n.network,n.followers?.value,n.followers?.approximate,n.followers?.stale,n.observedDelta,n.comparedPosts])])};
+ const meaningful={posts:safe.posts,postMetrics:posts.map(p=>[p.network,p.url,p.metrics?.value??null,p.metrics?.metric??null]),statuses:Object.fromEntries(networkNames.map(n=>[n,pick(safe.statuses[n],['state','method','discoveryMethod','count','confirmed','pending','missingFromFeed','missingFromSource'])])),reports:reports.map(r=>[r.from,r.to,r.followers,r.observedDelta,r.comparedPosts,r.networks.map(n=>[n.network,n.followers?.value,n.followers?.approximate,n.followers?.stale,n.observedDelta,n.comparedPosts])])};
  const signature=createHash('sha256').update(JSON.stringify(meaningful)).digest('hex');publicState.publicationVersion=signature;
  return{signature,publicState,reports:{schemaVersion:1,publicationVersion:signature,generatedAt:new Date(now).toISOString(),reports}};
 }
