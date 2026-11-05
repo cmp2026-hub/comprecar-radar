@@ -16,7 +16,7 @@ export function instagramPublicLinks(html){
 export function parseInstagramPostPublic(html,code,now=Date.now()){
  let post;for(const data of jsonScripts(html))walk(data,o=>{if(!post&&o.code===code&&o.taken_at&&instagramOwner(o.user)){
   const title=o.caption?.text?.split(/\r?\n/).map(t=>t.trim()).find(Boolean)||'Publicação de @comprecar';
-  try{post=validatePost({network:'instagram',url:'https://www.instagram.com/'+(o.media_type===2?'reel/':'p/')+o.code+'/',title,publishedAt:new Date(Number(o.taken_at)*1000).toISOString(),thumbnail:o.display_uri||o.image_versions2?.candidates?.[0]?.url,kind:o.media_type===2?'video':'image',source:'public'},now)}catch{}
+  try{post={...validatePost({network:'instagram',url:'https://www.instagram.com/'+(o.media_type===2?'reel/':'p/')+o.code+'/',title,publishedAt:new Date(Number(o.taken_at)*1000).toISOString(),thumbnail:o.display_uri||o.image_versions2?.candidates?.[0]?.url,kind:o.media_type===2?'video':'image',source:'public'},now),caption:String(o.caption?.text||'').slice(0,5000)}}catch{}
  }});
  if(!post)throw Error('A página pública não confirmou autor e data original desta publicação.');return post;
 }
@@ -31,12 +31,12 @@ export function parseFacebookPublic(html,now=Date.now()){
   const url=reel?.shareable_url||node.permalink_url||first(story,o=>o.wwwURL)||'https://www.facebook.com/Comprecar/posts/'+node.post_id;
   const thumbnail=reel?.video?.first_frame_thumbnail||first(node.attachments,o=>o.photo_image?.uri)||'';
   const video=!!reel||!!first(node.attachments,o=>o.__typename==='Video'?true:undefined);
-  try{const p=validatePost({network:'facebook',title,url,thumbnail,publishedAt:new Date(Number(node.creation_time)*1000).toISOString(),kind:video?'video':'image',source:'public'},now);posts.set(p.url,p)}catch{}
+  try{const p={...validatePost({network:'facebook',title,url,thumbnail,publishedAt:new Date(Number(node.creation_time)*1000).toISOString(),kind:video?'video':'image',source:'public'},now),caption:message.slice(0,5000)};posts.set(p.url,p)}catch{}
  }
  for(const data of jsonScripts(html))walk(data,o=>{
   const p=o.channel_tab_thumbnail_renderer?.video||(o.savable_title&&o.publish_time?o:null);if(!p||String(p.owner?.id)!=='100064536408329'||!p.publish_time||!/^\d+$/.test(p.id||''))return;
   const title=(p.savable_title?.text||p.creation_story?.message?.text||'').split(/\r?\n/).map(t=>t.trim()).find(Boolean);if(!title)return;
-  try{const post=validatePost({network:'facebook',url:'https://www.facebook.com/reel/'+p.id+'/',title,publishedAt:new Date(Number(p.publish_time)*1000).toISOString(),thumbnail:p.image?.uri,kind:'video',source:'public'},now);if(!posts.has(post.url))posts.set(post.url,post)}catch{}
+  try{const post={...validatePost({network:'facebook',url:'https://www.facebook.com/reel/'+p.id+'/',title,publishedAt:new Date(Number(p.publish_time)*1000).toISOString(),thumbnail:p.image?.uri,kind:'video',source:'public'},now),caption:String(p.creation_story?.message?.text||p.savable_title?.text||'').slice(0,5000)};if(!posts.has(post.url))posts.set(post.url,post)}catch{}
  });
  if(!posts.size)throw Error('Facebook não retornou posts públicos com autor e data confirmados.');
  return[...posts.values()];
@@ -87,7 +87,7 @@ export function parseYouTubePublic(html,id,now=Date.now()){
  if(video?.videoId!==id||video.channelId!=='UC9Pbtn0wi6CXxTHMPbolwPA'||micro?.externalChannelId!=='UC9Pbtn0wi6CXxTHMPbolwPA')throw Error('YouTube não confirmou o vídeo e o canal ComprecarTV.');
  const published=micro.publishDate;
  if(!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(published||''))throw Error('YouTube não informou a data e o horário originais.');
- return validatePost({network:'youtube',url:'https://www.youtube.com/watch?v='+id,title:video.title,publishedAt:published,thumbnail:'https://i.ytimg.com/vi/'+id+'/hqdefault.jpg',kind:'video',source:'public'},now);
+ return{...validatePost({network:'youtube',url:'https://www.youtube.com/watch?v='+id,title:video.title,publishedAt:published,thumbnail:'https://i.ytimg.com/vi/'+id+'/hqdefault.jpg',kind:'video',source:'public'},now),caption:String(video.shortDescription||'').slice(0,5000)};
 }
 export function parseYouTubeInventory(data,now=Date.now()){
  const scope=[data.contents,data.onResponseReceivedActions,data.onResponseReceivedEndpoints,data.continuationContents];

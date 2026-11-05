@@ -38,12 +38,14 @@ export function validatePost(p,now=Date.now()){
 export function safeImage(raw){try{const u=new URL(raw);return u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&/^(?:[\w-]+\.)*(?:ytimg\.com|cdninstagram\.com|fbcdn\.net|tiktokcdn\.com|tiktokcdn-us\.com)$/.test(u.hostname)?u.href:'';}catch{return''}}
 export function parseFeed(xml,network,now=Date.now()){
  if(!/<(?:feed|rss|rdf:RDF)\b/i.test(xml))throw Error('A fonte não retornou um feed RSS/Atom válido.');
+ if(network==='youtube'&&!xml.includes('<yt:channelId>'+CHANNEL+'</yt:channelId>'))throw Error('O feed não confirmou o canal ComprecarTV.');
  const items=[...xml.matchAll(/<(entry|item)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi)];
  const out=[];for(const[,_,item]of items){
   const url=decode(item.match(/<link\b[^>]*rel=["']alternate["'][^>]*href=["']([^"']+)["']/i)?.[1]||item.match(/<link\b[^>]*href=["']([^"']+)["']/i)?.[1]||tag(item,'link'));
   const title=tag(item,'title')||tag(item,'media:title');const publishedAt=tag(item,'published')||tag(item,'pubDate')||tag(item,'dc:date');
   const thumbnail=decode(item.match(/<media:thumbnail\b[^>]*url=["']([^"']+)["']/i)?.[1]||'');
-  try{out.push(validatePost({network,url,title,publishedAt,thumbnail,source:'feed'},now))}catch{/* An entry without a valid publication date or direct post URL is not imported. */}
+  if(network==='youtube'&&tag(item,'yt:channelId')!==CHANNEL)continue;
+  try{const post=validatePost({network,url,title,publishedAt,thumbnail,source:'feed'},now);out.push({...post,...(network==='youtube'?{authorVerified:true,caption:tag(item,'media:description').slice(0,5000)}:{})});}catch{/* An entry without a valid publication date or direct post URL is not imported. */}
  }
  return out;
 }
@@ -59,10 +61,16 @@ export function parseInstagramPublic(html,now=Date.now()){
   const p=entry.shortcode_media;if(!p||String(p.owner?.id)!=='1558975667'||p.owner?.username?.toLowerCase()!=='comprecar'||!/^[-\w]+$/.test(p.shortcode||''))continue;
   const caption=p.edge_media_to_caption?.edges?.[0]?.node?.text||'';
   const title=caption.split(/\r?\n/).map(l=>l.trim()).find(Boolean)||'Publicação de @comprecar';
-  try{posts.push(validatePost({network:'instagram',url:'https://www.instagram.com/'+(p.is_video?'reel/':'p/')+p.shortcode+'/',title,publishedAt:new Date(p.taken_at_timestamp*1000).toISOString(),thumbnail:p.display_url,kind:p.is_video?'video':'image',source:'public'},now))}catch{/* Entries without an original date or a valid direct link are not imported. */}
+  try{posts.push({...validatePost({network:'instagram',url:'https://www.instagram.com/'+(p.is_video?'reel/':'p/')+p.shortcode+'/',title,publishedAt:new Date(p.taken_at_timestamp*1000).toISOString(),thumbnail:p.display_url,kind:p.is_video?'video':'image',source:'public'},now),caption:caption.slice(0,5000)})}catch{/* Entries without an original date or a valid direct link are not imported. */}
  }
  if(!posts.length)throw Error('Instagram não retornou publicações válidas do @comprecar.');
  return posts;
+}
+export const trustedPublicPost=p=>p.source==='public'||p.network==='youtube'&&p.source==='feed'&&p.authorVerified===true;
+export function captionBody(p){const title=normalized(p.title),text=normalized(String(p.caption||''));return text.startsWith(title+' ')?text.slice(title.length+1):'';}
+export function sameCaption(p,q){
+ if(!trustedPublicPost(p)||!trustedPublicPost(q)||p.kind!==q.kind||normalized(p.title)!==normalized(q.title)||!p.publishedAt||!q.publishedAt||Math.abs(Date.parse(p.publishedAt)-Date.parse(q.publishedAt))>HOUR)return false;
+ const a=captionBody(p),b=captionBody(q),length=Math.min(160,a.length,b.length);return length>=120&&a.slice(0,length)===b.slice(0,length);
 }
 export function groupPosts(posts){
  const shortBuckets=new Map();for(const p of posts){const key=normalized(p.title)+'|'+p.kind,list=shortBuckets.get(key)||[];list.push(p);shortBuckets.set(key,list);}
@@ -73,7 +81,9 @@ export function groupPosts(posts){
   // only one candidate per network. Generic short titles remain separate.
   const near=(shortBuckets.get(key)||[]).filter(q=>!q.groupOverride&&q.publishedAt&&!q.metadataPending&&Math.abs(Date.parse(q.publishedAt)-Date.parse(p.publishedAt))<=900000);
   const short=words===4&&/\b(?:[a-z]+\d+[a-z0-9]*|[a-z0-9]*\d+[a-z][a-z0-9]*|tank \d+)\b/.test(n)&&!p.metadataPending&&new Set(near.map(q=>q.network)).size===near.length;
-  let group=p.groupOverride?manual.get(p.groupOverride):p.publishedAt&&(words>=5||short)?list.find(g=>!g.posts.some(q=>q.network===p.network)&&Math.abs(Date.parse(p.publishedAt)-Date.parse(g.posts[0].publishedAt))<=(short?900000:72*HOUR)&&!g.manual):undefined;
+  const captionNear=(shortBuckets.get(key)||[]).filter(q=>!q.groupOverride&&q.publishedAt&&!q.metadataPending&&Math.abs(Date.parse(q.publishedAt)-Date.parse(p.publishedAt))<=HOUR);
+  const captionShort=words>=3&&words<5&&!p.metadataPending&&new Set(captionNear.map(q=>q.network)).size===captionNear.length;
+  let group=p.groupOverride?manual.get(p.groupOverride):p.publishedAt?list.find(g=>!g.manual&&!g.posts.some(q=>q.network===p.network)&&((words>=5&&Math.abs(Date.parse(p.publishedAt)-Date.parse(g.posts[0].publishedAt))<=72*HOUR)||(short&&Math.abs(Date.parse(p.publishedAt)-Date.parse(g.posts[0].publishedAt))<=900000)||(captionShort&&Math.abs(Date.parse(p.publishedAt)-Date.parse(g.posts[0].publishedAt))<=HOUR&&g.posts.some(q=>sameCaption(p,q))))):undefined;
   if(!group){group={id:p.groupOverride||'post-'+p.id,title:p.title,autoTitle:n,kind:p.kind,manual:!!p.groupOverride,posts:[],latestAt:''};groups.push(group);if(p.groupOverride)manual.set(p.groupOverride,group);else{list.push(group);buckets.set(key,list)}}
   group.posts.push(p);if(p.publishedAt&&p.publishedAt>group.latestAt)group.latestAt=p.publishedAt;
  }
@@ -85,6 +95,7 @@ export function mergePosts(existing,incoming,seen=new Date().toISOString()){
   const key=postKey(p),old=map.get(key);
   const preferOld=old&&((p.source==='archive'&&!p.publishedAt)||(old.source==='public'&&p.source==='feed'));
   const next=preferOld?{...p,...old}:{...old,...p};
+  if(old?.originalTitle&&old.title!==old.originalTitle&&p.title===old.originalTitle&&normalized(String(p.caption||''))===normalized(String(old.caption||'')))next.title=old.title;
   if(preferOld&&old.network==='tiktok'&&old.publishedAt&&old.metadataPending!==true)next.metadataPending=false;
   if(old?.id)next.id=old.id;if(old?.groupOverride)next.groupOverride=old.groupOverride;
   next.firstSeenAt=old?.firstSeenAt||p.firstSeenAt||seen;map.set(key,next);
@@ -157,7 +168,8 @@ export function createApp(store,fetcher=fetch,{audienceInterval=AUDIENCE_INTERVA
   if(!posts){try{posts=custom?parseFeed(await getFeed(source),'tiktok'):parseTikTokFeed(await getFeed(source));}
    catch(e){feedError=String(e.message).slice(0,240);if(!snapshotPosts.length){state.statuses.tiktok={...previous,directError,directNextCheckAt,directLastSuccess,directSnapshot};throw e;}posts=[];}}
   if(!posts.length&&!snapshotPosts.length)throw Error('TikTok não disponibilizou publicações válidas.');
-  const candidates=posts.filter(p=>!existing.get(p.url)?.publishedAt||existing.get(p.url)?.metadataPending).slice(0,10),enriched=[],errors=[];
+  const rejected=new Set((state.linkRecovery?.rejectedCandidates||[]).map(p=>p.url));
+  const candidates=posts.filter(p=>!rejected.has(p.url)&&(!existing.get(p.url)?.publishedAt||existing.get(p.url)?.metadataPending)).slice(0,10),enriched=[],errors=[];
   for(let i=0;i<candidates.length;i+=2){
    const batch=await Promise.allSettled(candidates.slice(i,i+2).map(async p=>{const html=await getFeed(p.url,'tiktok');captureAudience(state,'tiktok',html);return parseTikTokPublic(html,p.url.match(/\/video\/(\d+)/)[1]);}));
    for(const result of batch)if(result.status==='fulfilled')enriched.push(result.value);else errors.push(String(result.reason.message).slice(0,240));
@@ -181,27 +193,29 @@ export function createApp(store,fetcher=fetch,{audienceInterval=AUDIENCE_INTERVA
   refreshing=(async()=>{const state=await read();if(!force&&Date.now()-Date.parse(state.lastCheck||0)<300000)return state;
    const now=new Date().toISOString();
    await Promise.all(Object.keys(NETWORKS).map(async network=>{
+    if(Date.parse(state.statuses[network]?.nextCheckAt||0)>Date.now())return;
     if(network==='facebook'||network==='tiktok'){
      if(Date.parse(state.statuses[network]?.nextCheckAt||0)>Date.now())return;
-     if(network==='tiktok'){try{await syncTikTok(state)}catch(e){state.statuses.tiktok={...state.statuses.tiktok,state:'error',message:e.message,lastAttempt:now,nextCheckAt:new Date(Date.now()+300000).toISOString()};}return;}
+     if(network==='tiktok'){try{await syncTikTok(state)}catch(e){state.statuses.tiktok={...state.statuses.tiktok,state:'error',message:e.message,lastAttempt:now,nextCheckAt:new Date(Date.now()+(/HTTP 40[139]|HTTP 429|redirect/i.test(e.message)?900000:300000)).toISOString()};}return;}
      try{let posts,method;if(network==='facebook'){
        const pages=await Promise.allSettled([getFeed(FACEBOOK_PAGE,'facebook'),getFeed(FACEBOOK_REELS,'facebook'),getFeed(FACEBOOK_VIDEOS,'facebook')]);posts=[];for(const page of pages)if(page.status==='fulfilled'){captureAudience(state,'facebook',page.value);try{posts.push(...parseFacebookPublic(page.value))}catch{}}
+       const denied=pages.find(p=>p.status==='rejected'&&/HTTP 40[139]|HTTP 429|redirect/i.test(p.reason?.message||''));if(!posts.length&&denied)throw denied.reason;
        method='public-page';if(!posts.length&&state.sources.facebook){posts=parseFeed(await getFeed(state.sources.facebook),'facebook');method='rss-fallback';}
        if(!posts.length)throw Error('Facebook não disponibilizou posts públicos com autor e data confirmados.');
       }
       posts=mergePosts([],posts,now);state.posts=mergePosts(state.posts,posts,now);state.statuses[network]={state:'ok',method,message:network==='facebook'?(method==='rss-fallback'?'Feed de reserva · página pública indisponível':'Página e Reels públicos · cobertura parcial'):'Feed público · seleção recente · datas podem estar ausentes',lastSuccess:now,count:posts.length,nextCheckAt:new Date(Date.now()+(network==='facebook'?120000:600000)).toISOString()};
-     }catch(e){state.statuses[network]={...state.statuses[network],state:'error',message:e.message,lastAttempt:now,nextCheckAt:new Date(Date.now()+300000).toISOString()};}return;
+     }catch(e){state.statuses[network]={...state.statuses[network],state:'error',message:e.message,lastAttempt:now,nextCheckAt:new Date(Date.now()+(/HTTP 40[139]|HTTP 429|redirect/i.test(e.message)?900000:300000)).toISOString()};}return;
     }
     const publicInstagram=network==='instagram';
     const url=network==='youtube'?'https://www.youtube.com/feeds/videos.xml?channel_id='+CHANNEL:publicInstagram?INSTAGRAM_PUBLIC_URL:state.sources[network];
     if(!url){state.statuses[network]={state:'pending',message:'Sem fonte automática',lastSuccess:null};return;}
     if(publicInstagram&&['public-profile','rss-fallback'].includes(state.statuses.instagram?.method)&&Date.parse(state.statuses.instagram.nextCheckAt||0)>Date.now())return;
     try{let posts,publicError;
-     try{const text=await getFeed(url,publicInstagram);captureAudience(state,network,text);posts=publicInstagram?parseInstagramPublic(text):parseFeed(text,network)}catch(e){if(!publicInstagram||!state.sources.instagram)throw e;publicError=String(e.message).slice(0,240);posts=parseFeed(await getFeed(state.sources.instagram),network);}
+     try{const text=await getFeed(url,publicInstagram);captureAudience(state,network,text);posts=publicInstagram?parseInstagramPublic(text):parseFeed(text,network)}catch(e){if(!publicInstagram||!state.sources.instagram||/HTTP 40[139]|HTTP 429|redirect/i.test(e.message))throw e;publicError=String(e.message).slice(0,240);posts=parseFeed(await getFeed(state.sources.instagram),network);}
      if(!posts.length)throw Error('Nenhuma publicação válida foi recebida; confira a fonte.');
      state.posts=mergePosts(state.posts,posts,now);
      state.statuses[network]={state:'ok',message:network==='youtube'?'Feed público · últimas publicações':publicError?'Feed de reserva · coleta pública direta temporariamente indisponível':publicInstagram?'Perfil público · sem login · consulta a cada 2 min':'Feed público configurado',lastSuccess:now,count:posts.length,method:publicError?'rss-fallback':publicInstagram?'public-profile':'rss',...(publicInstagram?{nextCheckAt:new Date(Date.now()+(publicError?300000:120000)).toISOString(),coverage:'Somente as publicações disponibilizadas pela fonte; a cobertura pode ser parcial.',...(publicError?{publicError}:{})}:{})};
-    }catch(e){state.statuses[network]={...state.statuses[network],state:'error',message:String(e.message).slice(0,240),lastAttempt:now,...(publicInstagram?{method:'public-profile',nextCheckAt:new Date(Date.now()+300000).toISOString()}:{})};}
+    }catch(e){state.statuses[network]={...state.statuses[network],state:'error',message:String(e.message).slice(0,240),lastAttempt:now,...(publicInstagram?{method:'public-profile',nextCheckAt:new Date(Date.now()+(/HTTP 40[139]|HTTP 429|redirect/i.test(e.message)?900000:300000)).toISOString()}:{nextCheckAt:new Date(Date.now()+(/HTTP 40[139]|HTTP 429|redirect/i.test(e.message)?900000:300000)).toISOString()})};}
    }));
    state.posts=mergePosts(state.posts,[]);const reconciled=reconcileKnownLinks(state.posts);state.posts=reconciled.posts;if(reconciled.matched.length){state.linkRecovery||={};state.linkRecovery.lastMatchedAt=new Date().toISOString();state.linkRecovery.lastMatched=reconciled.matched;}state.lastCheck=now;await save(state);return state;
   })();try{return await refreshing}finally{refreshing=null}
