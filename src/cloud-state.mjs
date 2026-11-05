@@ -1,5 +1,6 @@
 import{NETWORKS,canonical,hash,safeImage,groupPosts,coverageFor}from'./core.mjs';
 import{audienceReport,metricKey}from'./audience.mjs';
+import{missingLinkGroups}from'./link-recovery.mjs';
 import{PERIOD_PRESETS,presetRange}from'../public/period.mjs';
 import{createHash}from'node:crypto';
 const networkNames=Object.keys(NETWORKS),date=v=>typeof v==='string'&&Number.isFinite(Date.parse(v))?v:null;
@@ -22,6 +23,7 @@ const samples=values=>(values||[]).filter(s=>date(s.at)&&count(s.value)).map(s=>
 export function sanitizeState(input){
  const result={posts:(input.posts||[]).map(publicPost).filter(Boolean),sources:{},statuses:{},lastCheck:date(input.lastCheck),history:{}};
  for(const n of networkNames)result.statuses[n]=safeStatus(input.statuses?.[n]);
+ if(input.linkRecovery?.networks){result.linkRecovery={networks:{}};for(const n of networkNames){const r=input.linkRecovery.networks[n];if(!r)continue;result.linkRecovery.networks[n]={state:r.state==='paused'?'paused':'ok',lastCheckAt:date(r.lastCheckAt),nextCheckAt:date(r.nextCheckAt)};}}
  for(const n of[...networkNames,'annual'])if(input.history?.[n]){const h=input.history[n];result.history[n]={...pick(h,['state','pages','links','updatedAt','from','to','added','scanned']),message:'Levantamento público parcial.'};if(result.history[n].state==='running')result.history[n].state='paused';}
  if(input.audience){const a=input.audience;result.audience={startedAt:date(a.startedAt),profiles:{},videos:{},statuses:{},lastCheckAt:date(a.lastCheckAt),nextCheckAt:date(a.nextCheckAt)};
   for(const n of networkNames){const p=a.profiles?.[n];if(p&&count(p.value))result.audience.profiles[n]={value:p.value,approximate:!!p.approximate,observedAt:date(p.observedAt),sourceUrl:NETWORKS[n].url,samples:samples(p.samples)};result.audience.statuses[n]=safeStatus(a.statuses?.[n]);}
@@ -35,12 +37,13 @@ export function applyGroups(state,rules=[]){
  return state;
 }
 export function snapshot(state,now=Date.now()){
- const safe=sanitizeState(state),{audience,history,...rest}=safe;
+ const safe=sanitizeState(state),{audience,history,linkRecovery,...rest}=safe;
  const posts=safe.posts.map(p=>{const m=audience?.videos?.[metricKey(p.network,p.url)],metrics=p.kind==='video'&&m&&count(m.value)&&['views','plays'].includes(m.metric)&&date(m.observedAt)?pick(m,['value','metric','observedAt']):null;return{...p,metrics};});
  const publicState={...rest,posts,annualSearch:history.annual||null,coverage:coverageFor(safe),groups:groupPosts(posts),networks:NETWORKS,serverTime:new Date(now).toISOString(),publicView:true,cloudSnapshot:true};
  const reports=[];for(const at of[now,now+86400000])for(const preset of PERIOD_PRESETS){const range=presetRange(preset.id,new Date(at));if(!reports.some(r=>r.from===range.from&&r.to===range.to))reports.push({...audienceReport(safe,range,now),preset:preset.id});}
- const meaningful={posts:safe.posts,postMetrics:posts.map(p=>[p.network,p.url,p.metrics?.value??null,p.metrics?.metric??null]),statuses:Object.fromEntries(networkNames.map(n=>[n,pick(safe.statuses[n],['state','method','discoveryMethod','count','confirmed','pending','missingFromFeed','missingFromSource'])])),reports:reports.map(r=>[r.from,r.to,r.followers,r.observedDelta,r.comparedPosts,r.networks.map(n=>[n.network,n.followers?.value,n.followers?.approximate,n.followers?.stale,n.observedDelta,n.comparedPosts])])};
+ const meaningful={groups:publicState.groups.map(g=>[g.id,g.posts.map(p=>p.url)]),posts:safe.posts,postMetrics:posts.map(p=>[p.network,p.url,p.metrics?.value??null,p.metrics?.metric??null]),statuses:Object.fromEntries(networkNames.map(n=>[n,pick(safe.statuses[n],['state','method','discoveryMethod','count','confirmed','pending','missingFromFeed','missingFromSource'])])),reports:reports.map(r=>[r.from,r.to,r.followers,r.observedDelta,r.comparedPosts,r.networks.map(n=>[n.network,n.followers?.value,n.followers?.approximate,n.followers?.stale,n.observedDelta,n.comparedPosts])])};
  const signature=createHash('sha256').update(JSON.stringify(meaningful)).digest('hex');publicState.publicationVersion=signature;
- return{signature,publicState,reports:{schemaVersion:1,publicationVersion:signature,generatedAt:new Date(now).toISOString(),reports}};
+ const missingLinks={schemaVersion:1,generatedAt:new Date(now).toISOString(),lastCollectionAt:safe.lastCheck,publicationVersion:signature,windowHours:72,groups:missingLinkGroups(safe.posts,now).slice(0,30).map(({id,title,kind,anchorUrl,latestAt,missing,canAutoMatch,posts})=>({id,title,kind,anchorUrl,latestAt,missing,canAutoMatch,posts:posts.map(p=>pick(p,['network','url','title','publishedAt']))})),networks:linkRecovery?.networks||{},sources:safe.statuses};
+ return{signature,publicState,missingLinks,reports:{schemaVersion:1,publicationVersion:signature,generatedAt:new Date(now).toISOString(),reports}};
 }
 export function shouldPublish(previous,signature,now=Date.now()){return!previous||previous.signature!==signature||now-Date.parse(previous.at)>=3600000;}

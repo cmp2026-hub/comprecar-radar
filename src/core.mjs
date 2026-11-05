@@ -65,10 +65,15 @@ export function parseInstagramPublic(html,now=Date.now()){
  return posts;
 }
 export function groupPosts(posts){
+ const shortBuckets=new Map();for(const p of posts){const key=normalized(p.title)+'|'+p.kind,list=shortBuckets.get(key)||[];list.push(p);shortBuckets.set(key,list);}
  const groups=[],manual=new Map(),buckets=new Map();for(const p of [...posts].sort((a,b)=>(Date.parse(a.publishedAt)||0)-(Date.parse(b.publishedAt)||0))){
   const n=normalized(p.title),words=n.split(' ').length;
   const key=n+'|'+p.kind,list=buckets.get(key)||[];
-  let group=p.groupOverride?manual.get(p.groupOverride):p.publishedAt&&words>=5?list.find(g=>!g.posts.some(q=>q.network===p.network)&&Math.abs(Date.parse(p.publishedAt)-Date.parse(g.posts[0].publishedAt))<=72*HOUR&&!g.manual):undefined;
+  // Short model-specific headlines need an exact title, close timestamps and
+  // only one candidate per network. Generic short titles remain separate.
+  const near=(shortBuckets.get(key)||[]).filter(q=>!q.groupOverride&&q.publishedAt&&!q.metadataPending&&Math.abs(Date.parse(q.publishedAt)-Date.parse(p.publishedAt))<=900000);
+  const short=words===4&&/\b(?:[a-z]+\d+[a-z0-9]*|[a-z0-9]*\d+[a-z][a-z0-9]*|tank \d+)\b/.test(n)&&!p.metadataPending&&new Set(near.map(q=>q.network)).size===near.length;
+  let group=p.groupOverride?manual.get(p.groupOverride):p.publishedAt&&(words>=5||short)?list.find(g=>!g.posts.some(q=>q.network===p.network)&&Math.abs(Date.parse(p.publishedAt)-Date.parse(g.posts[0].publishedAt))<=(short?900000:72*HOUR)&&!g.manual):undefined;
   if(!group){group={id:p.groupOverride||'post-'+p.id,title:p.title,autoTitle:n,kind:p.kind,manual:!!p.groupOverride,posts:[],latestAt:''};groups.push(group);if(p.groupOverride)manual.set(p.groupOverride,group);else{list.push(group);buckets.set(key,list)}}
   group.posts.push(p);if(p.publishedAt&&p.publishedAt>group.latestAt)group.latestAt=p.publishedAt;
  }
