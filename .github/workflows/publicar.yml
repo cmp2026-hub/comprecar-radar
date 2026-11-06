@@ -3,8 +3,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  schedule:
-    - cron: '3-58/5 * * * *'
 permissions:
   contents: write
   pages: write
