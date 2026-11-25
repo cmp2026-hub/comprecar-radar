@@ -4,19 +4,21 @@ on:
     branches: [main]
   workflow_dispatch:
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 concurrency:
   group: comprecar-publicacao
   cancel-in-progress: false
 jobs:
-  publicar:
+  # Upload e deploy ficam em jobs diferentes. No mesmo job, actions/deploy-pages
+  # pode não encontrar o artefato github-pages recém-finalizado (actions/deploy-pages#451).
+  coletar:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: write
+      pages: read
+    outputs:
+      publish: ${{ steps.collect.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -52,15 +54,58 @@ jobs:
         with:
           path: site
           retention-days: 1
-      - name: Publicar o painel
-        id: deployment
-        uses: actions/deploy-pages@v4
-        if: steps.collect.outputs.publish == 'true'
-      - name: Confirmar a versão publicada
-        if: steps.deployment.outcome == 'success'
-        run: node scripts/mark-published.mjs
+      - name: Encaminhar o estado da coleta
+        if: success() && steps.collect.outputs.publish == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/estado"
+          cp .cache/state.json "$RUNNER_TEMP/estado/state.json"
+      - uses: actions/upload-artifact@v4
+        if: success() && steps.collect.outputs.publish == 'true'
+        with:
+          name: estado-da-coleta
+          path: ${{ runner.temp }}/estado/state.json
+          if-no-files-found: error
+          retention-days: 1
       - uses: actions/cache/save@v6
         if: always() && steps.collect.outcome == 'success'
         with:
           path: .cache
           key: comprecar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+  publicar:
+    needs: coletar
+    if: needs.coletar.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publicar o painel
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v7
+        if: success()
+      - uses: actions/setup-node@v7
+        if: success()
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        id: estado
+        if: success()
+        with:
+          name: estado-da-coleta
+          path: .cache
+      - name: Confirmar a versão publicada
+        id: confirmar
+        if: success() && steps.deployment.outcome == 'success'
+        run: node scripts/mark-published.mjs
+      - uses: actions/cache/save@v6
+        if: steps.confirmar.outcome == 'success'
+        with:
+          path: .cache
+          key: comprecar-state-v1-${{ github.run_id }}-${{ github.run_attempt }}-publicado
